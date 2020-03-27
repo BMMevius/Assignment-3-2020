@@ -2,7 +2,7 @@ import gzip
 import os
 import shutil
 
-from pandas import DataFrame, read_csv
+from pandas import DataFrame, read_csv, Series
 
 usage: str = """
 Usage:
@@ -52,24 +52,54 @@ if __name__ == "__main__":
     patch_set_files: DataFrame = read_csv(patch_set_files_path)
     patch_sets: DataFrame = read_csv(patch_sets_path)
 
-    predictor_variables: DataFrame = DataFrame(patch_set["id"])
-    groups = patch_set.groupby("owner_username")
+    groups = patch_sets.groupby("author_username")
 
     first_created_on = groups["createdOn"].min()
-    patch_set["first_change"] = patch_set["owner_username"].map(first_created_on)
-    patch_set["tenure"] = (patch_set["createdOn"] - patch_set["first_change"]) / 86400
-    patch_set["change_activity"] = patch_set.sort_values("createdOn").groupby("owner_username").cumcount()
+    patch_sets["first_change"] = patch_sets["author_username"].map(first_created_on)
+    patch_sets["tenure"] = (patch_sets["createdOn"] - patch_sets["first_change"]) / 86400
+    patch_sets["change_activity"] = patch_sets.sort_values("createdOn").groupby("author_username").cumcount()
     patch_set_approvals["first_review"] = patch_set_approvals["by_username"].map(
         patch_set_approvals.groupby("by_username")["grantedOn"].min()
     )
-    patch_set_approvals["review_tenure"] = (patch_set_approvals["grantedOn"] - patch_set_approvals["first_review"]) / 86400
     patch_set_approvals["review_activity"] = patch_set_approvals.sort_values("grantedOn").groupby("by_username").cumcount()
     patch_set_approvals["first_approval"] = patch_set_approvals["by_username"].map(
         patch_set_approvals.loc[patch_set_approvals["value"].isin([-2, 2])].groupby("by_username")["grantedOn"].min()
-    )
-    patch_set_approvals["approval_tenure"] = (patch_set_approvals["grantedOn"] - patch_set_approvals["first_approval"]) / 86400
+    ).fillna(0)
     patch_set_approvals["approval_activity"] = patch_set_approvals.sort_values("grantedOn").groupby("by_username")["value"].apply(
         lambda x: x.isin([-2, 2]).astype(int).fillna(1).cumsum()
     )
+
+    columns = ["number_cr", "tenure", "change_activity", "review_tenure", "review_activity", "approval_tenure", "approval_activity"]
+    predictor_variables = DataFrame(columns=columns)
+    for index, row in patch_sets.iterrows():
+        new_row = dict.fromkeys(columns)
+        new_row[columns[0]] = row[columns[0]]
+        new_row[columns[1]] = row[columns[1]]
+        new_row[columns[2]] = row[columns[2]]
+        review_series: Series = patch_set_approvals.loc[
+            patch_set_approvals["by_username"] == row["author_username"]
+        ]["first_review"]
+        if review_series.empty:
+            new_row[columns[3]] = 0
+        else:
+            new_row[columns[3]] = max(row["createdOn"] - review_series.iloc[0], 0)
+        new_row[columns[4]] = patch_set_approvals.loc[
+            (patch_set_approvals["by_username"] == row["author_username"]) &
+            (row["createdOn"] <= patch_set_approvals["grantedOn"])
+        ]["review_activity"].max()
+        activity_series: Series = patch_set_approvals.loc[
+            patch_set_approvals["by_username"] == row["author_username"]
+        ]["first_approval"]
+        if activity_series.empty:
+            new_row[columns[5]] = 0
+        else:
+            new_row[columns[5]] = max(row["createdOn"] - activity_series.iloc[0], 0)
+        new_row[columns[6]] = patch_set_approvals.loc[
+            (patch_set_approvals["by_username"] == row["author_username"]) &
+            (row["createdOn"] <= patch_set_approvals["grantedOn"])
+        ]["approval_activity"].max()
+        predictor_variables = predictor_variables.append(new_row, ignore_index=True)
+
+    review_duration = DataFrame(columns=[])
 
     pass
